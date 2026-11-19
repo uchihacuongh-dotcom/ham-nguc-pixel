@@ -1,0 +1,257 @@
+<title>Hầm Ngục Pixel</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600&display=swap">
+<style>
+/* Layout: one centered column — title row, HUD strip, dungeon canvas, message log, touch pad. Single dark look by choice. */
+:root{
+  --bg:#14111a; --panel:#1e1926; --line:#34293f; --fg:#e8dfd0; --muted:#9a8fa8;
+  --accent:#e0a33a; --hp:#d9534f; --good:#6fbf73; --potion:#d86fb0;
+  --font-display:'Pixelify Sans','Courier New',monospace; --font-body:system-ui,-apple-system,'Segoe UI',sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);
+  padding-block:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:740px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+h1{font-family:var(--font-display);font-weight:600;font-size:1.6rem;margin:0;letter-spacing:.02em;color:var(--accent)}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.top small{color:var(--muted)}
+.hud{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;background:var(--panel);border:1px solid var(--line);padding:10px 12px;font-family:var(--font-display);font-size:1rem}
+.hud b{font-weight:400;color:var(--muted)}
+.bar{flex:1 1 140px;min-width:120px;height:14px;background:#0e0b13;border:1px solid var(--line);position:relative}
+.bar i{position:absolute;inset:0 auto 0 0;background:var(--hp);width:100%;transition:width .15s}
+.bar span{position:absolute;inset:0;text-align:center;font-size:.75rem;line-height:14px;color:#fff}
+canvas{width:100%;height:auto;display:block;background:#0a0810;border:1px solid var(--line);image-rendering:pixelated;touch-action:none}
+.log{background:var(--panel);border:1px solid var(--line);padding:8px 12px;min-height:6.2em;font-size:.9rem;line-height:1.45}
+.log div{color:var(--muted)} .log div:last-child{color:var(--fg)}
+.pad{display:grid;grid-template-columns:repeat(3,64px);grid-template-rows:repeat(3,52px);gap:6px;justify-content:center}
+.pad button,.act button{font-family:var(--font-display);font-size:1.2rem;background:var(--panel);color:var(--fg);border:1px solid var(--line);cursor:pointer;touch-action:manipulation}
+.pad button:active,.act button:active{background:var(--line)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.act{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.act button{padding:10px 16px;font-size:1rem}
+.help{color:var(--muted);font-size:.8rem;line-height:1.5}
+.over{position:fixed;inset:0;background:rgba(10,8,16,.86);display:flex;align-items:center;justify-content:center;padding:16px;z-index:5}
+.over[hidden]{display:none}
+.card{background:var(--panel);border:1px solid var(--accent);padding:24px;max-width:360px;text-align:center;display:flex;flex-direction:column;gap:12px}
+.card h2{font-family:var(--font-display);margin:0;font-size:1.6rem}
+.card p{margin:0;color:var(--muted)}
+.card button{font-family:var(--font-display);font-size:1.1rem;padding:10px;background:var(--accent);color:#1a1205;border:0;cursor:pointer}
+@media(prefers-reduced-motion:reduce){.bar i{transition:none}}
+</style>
+
+<div class="wrap">
+  <div class="top"><h1>Hầm Ngục Pixel</h1><small>Lấy Bùa Hộ Mệnh ở tầng 5</small></div>
+  <div class="hud">
+    <div class="bar" title="Máu"><i id="hpFill"></i><span id="hpTxt"></span></div>
+    <div><b>Tầng</b> <span id="dep"></span></div>
+    <div><b>Cấp</b> <span id="lvl"></span></div>
+    <div><b>Vàng</b> <span id="gold"></span></div>
+    <div><b>Thuốc</b> <span id="pot"></span></div>
+  </div>
+  <canvas id="c" width="704" height="440" aria-label="Bản đồ hầm ngục"></canvas>
+  <div class="log" id="log" aria-live="polite"></div>
+  <div class="pad">
+    <span></span><button data-d="0,-1" aria-label="Lên">▲</button><span></span>
+    <button data-d="-1,0" aria-label="Trái">◀</button><button data-d="0,0" aria-label="Chờ">•</button><button data-d="1,0" aria-label="Phải">▶</button>
+    <span></span><button data-d="0,1" aria-label="Xuống">▼</button><span></span>
+  </div>
+  <div class="act"><button id="drink">Uống thuốc (Q)</button></div>
+  <div class="help">Di chuyển: phím mũi tên hoặc WASD. Đi vào quái để tấn công. Dấu <b style="color:var(--accent)">&gt;</b> là cầu thang xuống, <b style="color:var(--potion)">!</b> là thuốc hồi máu, <b style="color:var(--accent)">$</b> là vàng. Chết là chơi lại từ đầu.</div>
+</div>
+
+<div class="over" id="over" hidden><div class="card"><h2 id="oT"></h2><p id="oP"></p><button id="again">Chơi lại</button></div></div>
+
+<script>
+(function(){
+const W=32,H=20,T=22;
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const $=id=>document.getElementById(id);
+const rnd=n=>Math.floor(Math.random()*n);
+const FONT="'Pixelify Sans','Courier New',monospace";
+const TYPES=[
+ {n:'Chuột',g:'r',c:'#c9a27a',hp:5,atk:2,xp:3,d:1},
+ {n:'Bộ xương',g:'s',c:'#e8e4d8',hp:9,atk:3,xp:6,d:2},
+ {n:'Yêu tinh',g:'g',c:'#6fbf73',hp:12,atk:4,xp:9,d:3},
+ {n:'Ogre',g:'O',c:'#d98c4a',hp:22,atk:6,xp:20,d:4}
+];
+let map,seen,vis,rooms,mons,items,P,depth,turn,over,logs;
+
+function newGame(){
+  P={x:0,y:0,hp:24,max:24,atk:3,lvl:1,xp:0,gold:0,pot:1};
+  depth=1;turn=0;over=false;logs=[];
+  $('over').hidden=true;
+  gen();msg('Bạn bước vào hầm ngục. Hãy tìm Bùa Hộ Mệnh ở tầng 5.');
+  render();
+}
+function msg(t){logs.push(t);if(logs.length>5)logs.shift();$('log').innerHTML=logs.map(l=>'<div>'+l+'</div>').join('')}
+
+function gen(){
+  do{
+    map=Array.from({length:H},()=>Array(W).fill(1));
+    rooms=[];
+    for(let t=0;t<120&&rooms.length<8;t++){
+      const w=4+rnd(6),h=3+rnd(4),x=1+rnd(W-w-2),y=1+rnd(H-h-2);
+      if(rooms.some(r=>x<r.x+r.w+1&&x+w+1>r.x&&y<r.y+r.h+1&&y+h+1>r.y))continue;
+      rooms.push({x,y,w,h});
+      for(let j=y;j<y+h;j++)for(let i=x;i<x+w;i++)map[j][i]=0;
+    }
+  }while(rooms.length<4);
+  const ctr=r=>({x:r.x+(r.w>>1),y:r.y+(r.h>>1)});
+  for(let k=1;k<rooms.length;k++){
+    let a=ctr(rooms[k-1]),b=ctr(rooms[k]);
+    while(a.x!==b.x){map[a.y][a.x]=0;a.x+=Math.sign(b.x-a.x)}
+    while(a.y!==b.y){map[a.y][a.x]=0;a.y+=Math.sign(b.y-a.y)}
+  }
+  seen=Array.from({length:H},()=>Array(W).fill(false));
+  mons=[];items=[];
+  const first=rooms[0],last=rooms[rooms.length-1];
+  const spot=r=>{for(let n=0;n<50;n++){const x=r.x+rnd(r.w),y=r.y+rnd(r.h);if(!occupied(x,y))return{x,y}}return ctr(r)};
+  const c0=ctr(first);P.x=c0.x;P.y=c0.y;
+  if(depth<5){const s=ctr(last);items.push({x:s.x,y:s.y,t:'stairs'})}
+  else{
+    const s=ctr(last);items.push({x:s.x,y:s.y,t:'amulet'});
+    mons.push({n:'Rồng',g:'D',c:'#e0533a',hp:40,max:40,atk:8,xp:60,x:s.x+1>=last.x+last.w?s.x-1:s.x+1,y:s.y,boss:true});
+  }
+  const pool=TYPES.filter(t=>t.d<=depth);
+  const count=3+depth;
+  for(let i=0;i<count;i++){
+    const r=rooms[1+rnd(rooms.length-1)],p=spot(r);
+    const tp=pool[Math.min(pool.length-1,Math.floor(Math.random()*Math.random()*pool.length*1.6+ (depth>2?1:0)))]||pool[0];
+    mons.push({...tp,max:tp.hp,x:p.x,y:p.y});
+  }
+  for(let i=0;i<2+rnd(2);i++){const p=spot(rooms[rnd(rooms.length)]);if(!(p.x===P.x&&p.y===P.y))items.push({x:p.x,y:p.y,t:'gold',v:3+rnd(6)+depth*2})}
+  for(let i=0;i<1+rnd(2);i++){const p=spot(rooms[rnd(rooms.length)]);if(!(p.x===P.x&&p.y===P.y))items.push({x:p.x,y:p.y,t:'potion'})}
+  fov();
+}
+function occupied(x,y){return mons.some(m=>m.x===x&&m.y===y)||items.some(i=>i.x===x&&i.y===y)||(P&&P.x===x&&P.y===y)}
+function monAt(x,y){return mons.find(m=>m.x===x&&m.y===y)}
+
+function los(x0,y0,x1,y1){
+  let dx=Math.abs(x1-x0),dy=Math.abs(y1-y0),sx=x0<x1?1:-1,sy=y0<y1?1:-1,e=dx-dy,x=x0,y=y0;
+  while(!(x===x1&&y===y1)){
+    if(!(x===x0&&y===y0)&&map[y][x]===1)return false;
+    const e2=2*e;if(e2>-dy){e-=dy;x+=sx}if(e2<dx){e+=dx;y+=sy}
+  }
+  return true;
+}
+function fov(){
+  vis=Array.from({length:H},()=>Array(W).fill(false));
+  for(let y=Math.max(0,P.y-8);y<=Math.min(H-1,P.y+8);y++)
+    for(let x=Math.max(0,P.x-8);x<=Math.min(W-1,P.x+8);x++){
+      if((x-P.x)**2+(y-P.y)**2<=64&&los(P.x,P.y,x,y)){vis[y][x]=true;seen[y][x]=true}
+    }
+}
+
+function dmg(a){return Math.max(1,a+rnd(3)-1)}
+function act(dx,dy){
+  if(over)return;
+  const nx=P.x+dx,ny=P.y+dy;
+  if(dx||dy){
+    const m=monAt(nx,ny);
+    if(m){
+      const d=dmg(P.atk);m.hp-=d;
+      if(m.hp<=0){
+        msg('Bạn hạ gục '+m.n+'! (+'+m.xp+' XP)');
+        mons=mons.filter(o=>o!==m);gainXp(m.xp);
+        if(Math.random()<.25&&!m.boss)items.push({x:m.x,y:m.y,t:'potion'});
+      }else msg('Bạn đánh '+m.n+' gây '+d+' sát thương.');
+    }else if(map[ny]&&map[ny][nx]===0){
+      P.x=nx;P.y=ny;pickup();
+    }else return;
+  }
+  turn++;
+  if(turn%8===0&&P.hp<P.max)P.hp++;
+  monsterTurn();
+  fov();render();
+  if(P.hp<=0)end(false);
+}
+function pickup(){
+  const it=items.find(i=>i.x===P.x&&i.y===P.y);if(!it)return;
+  if(it.t==='gold'){P.gold+=it.v;msg('Bạn nhặt '+it.v+' vàng.');items=items.filter(i=>i!==it)}
+  else if(it.t==='potion'){P.pot++;msg('Bạn nhặt một bình thuốc hồi máu.');items=items.filter(i=>i!==it)}
+  else if(it.t==='stairs'){depth++;msg('Bạn đi xuống tầng '+depth+'.');gen()}
+  else if(it.t==='amulet'){P.gold+=100;fov();render();end(true)}
+}
+function gainXp(x){
+  P.xp+=x;
+  while(P.xp>=P.lvl*10){P.xp-=P.lvl*10;P.lvl++;P.max+=5;P.hp=Math.min(P.max,P.hp+8);P.atk++;msg('Lên cấp '+P.lvl+'! Máu và sức mạnh tăng.')}
+}
+function drink(){
+  if(over)return;
+  if(P.pot<1){msg('Bạn hết thuốc.');return}
+  if(P.hp>=P.max){msg('Máu đã đầy.');return}
+  P.pot--;P.hp=Math.min(P.max,P.hp+14);msg('Bạn uống thuốc, hồi 14 máu.');
+  monsterTurn();fov();render();if(P.hp<=0)end(false);
+}
+function monsterTurn(){
+  for(const m of mons){
+    const dx=P.x-m.x,dy=P.y-m.y,dist=Math.max(Math.abs(dx),Math.abs(dy));
+    if(Math.abs(dx)+Math.abs(dy)===1){
+      const d=dmg(m.atk);P.hp-=d;msg(m.n+' cắn bạn, mất '+d+' máu.');
+    }else if(dist<=8&&los(m.x,m.y,P.x,P.y)){
+      const tries=Math.abs(dx)>Math.abs(dy)?[[Math.sign(dx),0],[0,Math.sign(dy)]]:[[0,Math.sign(dy)],[Math.sign(dx),0]];
+      for(const[a,b]of tries){
+        if(!a&&!b)continue;
+        const x=m.x+a,y=m.y+b;
+        if(map[y][x]===0&&!monAt(x,y)&&!(x===P.x&&y===P.y)){m.x=x;m.y=y;break}
+      }
+    }
+  }
+}
+function end(win){
+  over=true;
+  $('oT').textContent=win?'Chiến thắng!':'Bạn đã gục ngã';
+  $('oP').textContent=win?('Bạn lấy được Bùa Hộ Mệnh. Cấp '+P.lvl+', '+P.gold+' vàng.'):('Bạn chết ở tầng '+depth+' với '+P.gold+' vàng.');
+  $('over').hidden=false;
+}
+
+function render(){
+  ctx.fillStyle='#0a0810';ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    if(!seen[y][x])continue;
+    const v=vis[y][x],px=x*T,py=y*T;
+    if(map[y][x]===1){
+      ctx.fillStyle=v?'#4a3b5c':'#241d2e';ctx.fillRect(px,py,T,T);
+      ctx.fillStyle=v?'#3a2d4a':'#1a1523';ctx.fillRect(px,py+T/2-1,T,2);ctx.fillRect(px+(y%2?5:13),py,2,T/2);ctx.fillRect(px+(y%2?13:5),py+T/2,2,T/2);
+    }else{
+      ctx.fillStyle=v?'#2a2233':'#171320';ctx.fillRect(px,py,T,T);
+      ctx.fillStyle=v?'#332a3e':'#1c1726';ctx.fillRect(px+T/2-1,py+T/2-1,2,2);
+    }
+  }
+  ctx.font='bold 17px '+FONT;
+  for(const it of items){
+    if(!seen[it.y][it.x])continue;
+    const v=vis[it.y][it.x];ctx.globalAlpha=v?1:.45;
+    const g={gold:['$','#f2c14e'],potion:['!','#d86fb0'],stairs:['>','#e0a33a'],amulet:['*','#6fe0ff']}[it.t];
+    ctx.fillStyle=g[1];ctx.fillText(g[0],it.x*T+T/2,it.y*T+T/2+1);
+  }
+  ctx.globalAlpha=1;
+  for(const m of mons){
+    if(!vis[m.y][m.x])continue;
+    ctx.fillStyle=m.c;ctx.fillText(m.g,m.x*T+T/2,m.y*T+T/2+1);
+    if(m.hp<m.max){ctx.fillStyle='#000';ctx.fillRect(m.x*T+2,m.y*T+T-4,T-4,3);ctx.fillStyle='#d9534f';ctx.fillRect(m.x*T+2,m.y*T+T-4,(T-4)*m.hp/m.max,3)}
+  }
+  ctx.fillStyle='#ffe9a8';ctx.font='bold 19px '+FONT;ctx.fillText('@',P.x*T+T/2,P.y*T+T/2+1);
+  $('hpFill').style.width=Math.max(0,P.hp/P.max*100)+'%';
+  $('hpTxt').textContent=Math.max(0,P.hp)+' / '+P.max;
+  $('dep').textContent=depth;$('lvl').textContent=P.lvl;$('gold').textContent=P.gold;$('pot').textContent=P.pot;
+}
+
+const KEYS={ArrowUp:[0,-1],w:[0,-1],ArrowDown:[0,1],s:[0,1],ArrowLeft:[-1,0],a:[-1,0],ArrowRight:[1,0],d:[1,0],' ':[0,0],'.':[0,0]};
+addEventListener('keydown',e=>{
+  const k=e.key.length===1?e.key.toLowerCase():e.key;
+  if(k==='q'){drink();return}
+  if(k==='Enter'&&over){newGame();return}
+  const d=KEYS[k];if(d){e.preventDefault();act(d[0],d[1])}
+});
+document.querySelectorAll('.pad button').forEach(b=>b.addEventListener('click',()=>{const[a,c]=b.dataset.d.split(',').map(Number);act(a,c)}));
+$('drink').addEventListener('click',drink);
+$('again').addEventListener('click',newGame);
+newGame();
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(render);
+})();
+</script>
